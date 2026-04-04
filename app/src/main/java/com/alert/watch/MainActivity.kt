@@ -303,32 +303,41 @@ fun threatToInstruction(threat: String) = when (threat) {
     else         -> "היכנס למרחב מוגן"
 }
 
-// ── Settings Screen ───────────────────────────────────────────────────────────
-
+// ── Settings Screen ————
 @Composable
 fun SettingsScreen(
     prefs: AppPrefs,
     onRequestGps: () -> Unit,
-    onBack: () -> Unit,          // חזרה ללא שמירה
+    onBack: () -> Unit,
     onSave: (AppPrefs) -> Unit,
-    onStopService: () -> Unit    // כיבוי שירות + סגירת אפליקציה
+    onStopService: () -> Unit
 ) {
     var selected by remember { mutableStateOf(prefs.watchedCities.toMutableSet()) }
     var useGps   by remember { mutableStateOf(prefs.useGps) }
     var query    by remember { mutableStateOf("") }
 
-    // כפתור חזרה – חוזר ללא שמירה
+    // כפתור חזרה – ללא שמירה
     BackHandler { onBack() }
 
-    // רשימה: נבחרים ראשונים, אחר כך לפי סינון
-    val displayList = remember(query, selected) {
-        val selectedSorted = selected.toList().sorted()
-        val rest = if (query.isBlank()) {
-            CITIES.filter { it !in selected }.take(30)
+    // רשימה מסוננת:
+    // 1. תמיד מציג נבחרים ראשונים
+    // 2. אחר כך שאר הרשימה לפי חיפוש
+    // כולל חיפוש חופשי – גם מילים שאינן ברשימה המוכנה
+    val filteredList = remember(query, selected.size) {
+        val q = query.trim()
+        if (q.isBlank()) {
+            // ללא חיפוש: נבחרים ראשונים, אחר כך כל השאר
+            val sel  = CITIES.filter { it in selected }
+            val rest = CITIES.filter { it !in selected }
+            sel + rest
         } else {
-            CITIES.filter { it !in selected && it.contains(query.trim(), ignoreCase = true) }.take(20)
+            // עם חיפוש: מציג הכל שמכיל את הטקסט
+            // נבחרים ראשונים, אחר כך שאר התוצאות
+            val all = CITIES.filter { it.contains(q, ignoreCase = true) }
+            val sel  = all.filter { it in selected }
+            val rest = all.filter { it !in selected }
+            sel + rest
         }
-        selectedSorted + rest
     }
 
     ScalingLazyColumn(
@@ -339,14 +348,16 @@ fun SettingsScreen(
         // כותרת
         item {
             Text("בחר ישובים", color = Color.White, fontSize = 13.sp,
-                fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth(),
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center)
         }
 
         // GPS
         item {
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
                     .background(if (useGps) Color(0xFF00E676).copy(0.12f) else Color.White.copy(0.06f))
                     .clickable { useGps = !useGps; if (useGps) onRequestGps() }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -354,8 +365,8 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
-                    Text("📍 GPS אוטומטי", color = Color.White, fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium)
+                    Text("📍 GPS אוטומטי", color = Color.White,
+                        fontSize = 11.sp, fontWeight = FontWeight.Medium)
                     Text(prefs.gpsCity ?: "מזהה ישוב קרוב",
                         color = if (prefs.gpsCity != null) Color(0xFF00E676).copy(0.8f)
                                 else Color.White.copy(0.4f),
@@ -366,19 +377,22 @@ fun SettingsScreen(
             }
         }
 
-        // חיפוש
+        // שדה חיפוש
         item {
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
                     .background(Color.White.copy(0.08f))
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("🔍 ", fontSize = 12.sp)
                 BasicTextField(
-                    value = query, onValueChange = { query = it },
+                    value = query,
+                    onValueChange = { query = it },
                     textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
-                    cursorBrush = SolidColor(Color.White), singleLine = true,
+                    cursorBrush = SolidColor(Color.White),
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     decorationBox = { inner ->
                         if (query.isEmpty())
@@ -393,36 +407,41 @@ fun SettingsScreen(
         if (selected.isNotEmpty()) {
             item {
                 Text("✓ נבחרו: ${selected.size}",
-                    color = Color(0xFF00E676).copy(0.8f), fontSize = 10.sp,
+                    color = Color(0xFF00E676).copy(0.8f),
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(start = 4.dp))
             }
         }
 
-        // רשימת ישובים – נבחרים ראשונים
-        items(displayList.chunked(2).size) { i ->
-            val row = displayList.chunked(2)[i]
+        // רשימת ישובים
+        items(filteredList.chunked(2).size) { i ->
+            val row = filteredList.chunked(2)[i]
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 row.forEach { city ->
                     val active = city in selected
                     Box(
-                        Modifier.weight(1f).clip(RoundedCornerShape(8.dp))
+                        Modifier.weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
                             .background(
                                 if (active) Color(0xFFCC0000).copy(0.85f)
                                 else Color.White.copy(0.07f)
                             )
                             .clickable {
-                                selected = selected.toMutableSet().also {
-                                    if (active) it.remove(city) else it.add(city)
-                                }
+                                val newSet = selected.toMutableSet()
+                                if (active) newSet.remove(city) else newSet.add(city)
+                                selected = newSet
                             }
                             .padding(vertical = 6.dp, horizontal = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(city,
                             color = if (active) Color.White else Color.White.copy(0.6f),
-                            fontSize = 10.sp, textAlign = TextAlign.Center,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 13.sp)
+                            fontSize = 10.sp,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            lineHeight = 13.sp)
                     }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
@@ -433,7 +452,8 @@ fun SettingsScreen(
         item {
             Spacer(Modifier.height(4.dp))
             Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFFCC0000))
                     .clickable { onSave(prefs.copy(watchedCities = selected, useGps = useGps)) }
                     .padding(vertical = 10.dp),
@@ -447,7 +467,8 @@ fun SettingsScreen(
         item {
             Spacer(Modifier.height(2.dp))
             Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
                     .background(Color.White.copy(0.08f))
                     .clickable { onStopService() }
                     .padding(vertical = 10.dp),
@@ -458,3 +479,4 @@ fun SettingsScreen(
         }
     }
 }
+
