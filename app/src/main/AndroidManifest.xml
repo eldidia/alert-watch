@@ -28,21 +28,14 @@
             </intent-filter>
         </activity>
 
-        <!-- Pushy Push Receiver -->
-        <receiver android:name=".PushReceiver" android:exported="false">
-            <intent-filter>
-                <action android:name="pushy.me" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Pushy background services -->
-        <service android:name="me.pushy.sdk.services.PushySocketService"
+        <!-- Foreground Service – רץ תמיד ברקע -->
+        <service
+            android:name=".AlertService"
+            android:exported="false"
             android:stopWithTask="false" />
-        <service android:name="me.pushy.sdk.services.PushyJobService"
-            android:exported="true"
-            android:permission="android.permission.BIND_JOB_SERVICE" />
-        <receiver android:name="me.pushy.sdk.receivers.PushyBootReceiver"
-            android:exported="false">
+
+        <!-- מפעיל מחדש אחרי ריסטרט -->
+        <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
