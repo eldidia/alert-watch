@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
@@ -92,7 +93,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // הפעל שירות
         setContent {
             val alert    by AlertService.alertState.collectAsState()
             val appPrefs by prefs.state.collectAsState()
@@ -104,26 +104,35 @@ class MainActivity : ComponentActivity() {
 
             MaterialTheme {
                 when (screen) {
-                    Screen.STANDBY  -> StandbyScreen(prefs = appPrefs,
-                        onSettings = { screen = Screen.SETTINGS })
-                    Screen.ALERT    -> AlertScreen(alert = alert,
+                    Screen.STANDBY  -> StandbyScreen(
+                        prefs = appPrefs,
+                        onSettings = { screen = Screen.SETTINGS }
+                    )
+                    Screen.ALERT    -> AlertScreen(
+                        alert = alert,
                         onDismiss = {
                             AlertService.alertState.value = AlertState()
                             screen = Screen.STANDBY
-                        })
+                        }
+                    )
                     Screen.SETTINGS -> SettingsScreen(
                         prefs        = appPrefs,
                         onRequestGps = { requestGps() },
+                        onBack       = { screen = Screen.STANDBY }, // חזרה ללא שמירה
                         onSave       = { updated ->
                             prefs.save(updated)
                             screen = Screen.STANDBY
+                        },
+                        onStopService = {
+                            AlertService.stop(this)
+                            finishAffinity() // סגור אפליקציה לחלוטין
                         }
                     )
                 }
             }
         }
     }
-    
+
     override fun onResume() {
         super.onResume()
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -240,6 +249,10 @@ fun AlertScreen(alert: AlertState, onDismiss: () -> Unit) {
     val bgAlpha by inf.animateFloat(
         0.82f, 1f, infiniteRepeatable(tween(450), RepeatMode.Reverse), label = "a"
     )
+
+    // כפתור חזרה סוגר את ההתראה
+    BackHandler { onDismiss() }
+
     Box(
         Modifier.fillMaxSize().background(Color(0xFFBB0000).copy(bgAlpha))
             .clickable { onDismiss() },
@@ -248,7 +261,8 @@ fun AlertScreen(alert: AlertState, onDismiss: () -> Unit) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(10.dp)) {
             Text("🚨", fontSize = 26.sp)
             Spacer(Modifier.height(2.dp))
-            Text("צבע אדום", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
+            Text("ALERT", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black,
+                letterSpacing = 2.sp)
             Spacer(Modifier.height(2.dp))
             Text(alert.cities.take(3).joinToString(" · "),
                 color = Color.White.copy(0.9f), fontSize = 11.sp,
@@ -289,15 +303,32 @@ fun threatToInstruction(threat: String) = when (threat) {
     else         -> "היכנס למרחב מוגן"
 }
 
+// ── Settings Screen ───────────────────────────────────────────────────────────
+
 @Composable
-fun SettingsScreen(prefs: AppPrefs, onRequestGps: () -> Unit, onSave: (AppPrefs) -> Unit) {
+fun SettingsScreen(
+    prefs: AppPrefs,
+    onRequestGps: () -> Unit,
+    onBack: () -> Unit,          // חזרה ללא שמירה
+    onSave: (AppPrefs) -> Unit,
+    onStopService: () -> Unit    // כיבוי שירות + סגירת אפליקציה
+) {
     var selected by remember { mutableStateOf(prefs.watchedCities.toMutableSet()) }
     var useGps   by remember { mutableStateOf(prefs.useGps) }
     var query    by remember { mutableStateOf("") }
 
-    val filtered = remember(query) {
-        if (query.isBlank()) CITIES.take(30)
-        else CITIES.filter { it.contains(query.trim(), ignoreCase = true) }.take(20)
+    // כפתור חזרה – חוזר ללא שמירה
+    BackHandler { onBack() }
+
+    // רשימה: נבחרים ראשונים, אחר כך לפי סינון
+    val displayList = remember(query, selected) {
+        val selectedSorted = selected.toList().sorted()
+        val rest = if (query.isBlank()) {
+            CITIES.filter { it !in selected }.take(30)
+        } else {
+            CITIES.filter { it !in selected && it.contains(query.trim(), ignoreCase = true) }.take(20)
+        }
+        selectedSorted + rest
     }
 
     ScalingLazyColumn(
@@ -305,6 +336,7 @@ fun SettingsScreen(prefs: AppPrefs, onRequestGps: () -> Unit, onSave: (AppPrefs)
         contentPadding = PaddingValues(top = 26.dp, bottom = 24.dp, start = 8.dp, end = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        // כותרת
         item {
             Text("בחר ישובים", color = Color.White, fontSize = 13.sp,
                 fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth(),
@@ -357,21 +389,28 @@ fun SettingsScreen(prefs: AppPrefs, onRequestGps: () -> Unit, onSave: (AppPrefs)
             }
         }
 
+        // כמה נבחרו
         if (selected.isNotEmpty()) {
             item {
-                Text("נבחרו: ${selected.size}", color = Color(0xFF00E676).copy(0.7f),
-                    fontSize = 10.sp, modifier = Modifier.padding(start = 4.dp))
+                Text("✓ נבחרו: ${selected.size}",
+                    color = Color(0xFF00E676).copy(0.8f), fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = 4.dp))
             }
         }
 
-        items(filtered.chunked(2).size) { i ->
-            val row = filtered.chunked(2)[i]
+        // רשימת ישובים – נבחרים ראשונים
+        items(displayList.chunked(2).size) { i ->
+            val row = displayList.chunked(2)[i]
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 row.forEach { city ->
                     val active = city in selected
                     Box(
                         Modifier.weight(1f).clip(RoundedCornerShape(8.dp))
-                            .background(if (active) Color(0xFFCC0000).copy(0.85f) else Color.White.copy(0.07f))
+                            .background(
+                                if (active) Color(0xFFCC0000).copy(0.85f)
+                                else Color.White.copy(0.07f)
+                            )
                             .clickable {
                                 selected = selected.toMutableSet().also {
                                     if (active) it.remove(city) else it.add(city)
@@ -380,7 +419,8 @@ fun SettingsScreen(prefs: AppPrefs, onRequestGps: () -> Unit, onSave: (AppPrefs)
                             .padding(vertical = 6.dp, horizontal = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(city, color = if (active) Color.White else Color.White.copy(0.6f),
+                        Text(city,
+                            color = if (active) Color.White else Color.White.copy(0.6f),
                             fontSize = 10.sp, textAlign = TextAlign.Center,
                             maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 13.sp)
                     }
@@ -389,6 +429,7 @@ fun SettingsScreen(prefs: AppPrefs, onRequestGps: () -> Unit, onSave: (AppPrefs)
             }
         }
 
+        // כפתור שמור
         item {
             Spacer(Modifier.height(4.dp))
             Box(
@@ -399,6 +440,20 @@ fun SettingsScreen(prefs: AppPrefs, onRequestGps: () -> Unit, onSave: (AppPrefs)
                 contentAlignment = Alignment.Center
             ) {
                 Text("שמור", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // כפתור כיבוי שירות
+        item {
+            Spacer(Modifier.height(2.dp))
+            Box(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(0.08f))
+                    .clickable { onStopService() }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("כבה שירות", color = Color.White.copy(0.5f), fontSize = 12.sp)
             }
         }
     }

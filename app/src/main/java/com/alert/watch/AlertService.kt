@@ -8,22 +8,15 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
-import org.json.JSONObject
+import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
 
-/**
- * AlertService – Foreground Service שרץ תמיד ברקע.
- *
- * • מציג נוטיפיקציה קטנה תמידית = Wear OS לא יהרוג אותו
- * • Polling ל-api.tzevaadom.co.il כל 3 שניות
- * • START_STICKY = קם מחדש אם נהרג
- * • מסנן לפי ישובים שנבחרו
- */
 class AlertService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var lastAlertId = ""
+    private var autoDismissJob: Job? = null
 
     companion object {
         const val CH_ONGOING = "alert_ongoing"
@@ -31,6 +24,7 @@ class AlertService : Service() {
         const val NOTIF_ONGOING = 1
         const val NOTIF_ALERT   = 2
         const val POLL_URL = "https://api.tzevaadom.co.il/notifications"
+        const val AUTO_DISMISS_MS = 10 * 60 * 1000L // 10 דקות
 
         val alertState = MutableStateFlow(AlertState())
 
@@ -40,6 +34,10 @@ class AlertService : Service() {
                 ctx.startForegroundService(i)
             else
                 ctx.startService(i)
+        }
+
+        fun stop(ctx: Context) {
+            ctx.stopService(Intent(ctx, AlertService::class.java))
         }
     }
 
@@ -82,14 +80,11 @@ class AlertService : Service() {
 
         val body: String
         try {
-            body = conn.inputStream.readBytes()
-                .toString(Charsets.UTF_8)
-                .trim()
+            body = conn.inputStream.readBytes().toString(Charsets.UTF_8).trim()
         } finally {
             conn.disconnect()
         }
 
-        // אין התראות
         if (body.isBlank() || body == "[]" || body == "null") {
             if (alertState.value.active) {
                 alertState.emit(AlertState())
@@ -98,8 +93,7 @@ class AlertService : Service() {
             return
         }
 
-        // parse JSON array
-        val arr = org.json.JSONArray(body)
+        val arr = JSONArray(body)
         if (arr.length() == 0) {
             if (alertState.value.active) {
                 alertState.emit(AlertState())
@@ -108,7 +102,6 @@ class AlertService : Service() {
             return
         }
 
-        // קח את ההתראה הראשונה
         val alert     = arr.getJSONObject(0)
         val alertId   = alert.optString("notificationId", "")
         val citiesArr = alert.optJSONArray("cities")
@@ -120,11 +113,9 @@ class AlertService : Service() {
         if (alertId == lastAlertId && alertState.value.active) return
         lastAlertId = alertId
 
-        // כל הערים מהתראה
         val allCities = (0 until (citiesArr?.length() ?: 0))
             .map { citiesArr!!.getString(it) }
 
-        // סנן לפי ישובים שנבחרו
         val prefs   = AppPreferences(this)
         val p       = prefs.state.value
         val watched = buildSet<String> {
@@ -144,7 +135,6 @@ class AlertService : Service() {
 
         Log.d("AlertService", "🚨 ${relevant.joinToString()} | threat=$threat")
 
-        // עדכן state
         alertState.emit(AlertState(
             active      = true,
             cities      = relevant,
@@ -158,7 +148,15 @@ class AlertService : Service() {
         showAlertNotif(relevant, threat, countdown)
         updateOngoingNotif(active = true, city = relevant.firstOrNull())
 
-        // פתח Activity
+        // מחיקה אוטומטית אחרי 10 דקות
+        autoDismissJob?.cancel()
+        autoDismissJob = scope.launch {
+            delay(AUTO_DISMISS_MS)
+            alertState.emit(AlertState())
+            updateOngoingNotif(active = false)
+            getSystemService(NotificationManager::class.java).cancel(NOTIF_ALERT)
+        }
+
         startActivity(Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         })
@@ -166,9 +164,6 @@ class AlertService : Service() {
 
     private fun countdownForThreat(threat: String) = when (threat) {
         "1","2","13" -> 90
-        "3"          -> 0
-        "4"          -> 0
-        "6"          -> 0
         else         -> 60
     }
 
@@ -181,8 +176,8 @@ class AlertService : Service() {
         )
         return NotificationCompat.Builder(this, CH_ONGOING)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(if (active) "🚨 צבע אדום!" else "ALERT")
-            .setContentText(if (active && city != null) city else "פעיל · ממתין להתראות")
+            .setContentTitle(if (active) "ALERT 🚨 – ${city ?: ""}" else "ALERT")
+            .setContentText(if (active) "צבע אדום פעיל" else "פעיל · ממתין להתראות")
             .setContentIntent(pi)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -200,15 +195,18 @@ class AlertService : Service() {
             this, 1, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        // כותרת: ALERT – עיר1, עיר2
+        val cityTitle = cities.take(2).joinToString(", ")
         val notif = NotificationCompat.Builder(this, CH_ALERT)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("🚨 צבע אדום – ${cities.take(2).joinToString(", ")}")
+            .setContentTitle("ALERT – $cityTitle")
             .setContentText("${threatToInstruction(threat)} • $countdown שנ'")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setFullScreenIntent(pi, true)
             .setColor(0xFFCC0000.toInt())
             .setAutoCancel(true)
+            .setTimeoutAfter(AUTO_DISMISS_MS) // מחיקה אוטומטית ב-10 דקות
             .build()
         getSystemService(NotificationManager::class.java).notify(NOTIF_ALERT, notif)
     }
