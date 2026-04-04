@@ -93,14 +93,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // הפעל שירות
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED) {
-            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            AlertService.start(this)
-        }
-
         setContent {
             val alert    by AlertService.alertState.collectAsState()
             val appPrefs by prefs.state.collectAsState()
@@ -129,6 +121,17 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+    
+    override fun onResume() {
+        super.onResume()
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) {
+            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            AlertService.start(this)
         }
     }
 
