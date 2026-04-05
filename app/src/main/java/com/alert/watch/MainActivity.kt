@@ -142,6 +142,15 @@ class MainActivity : ComponentActivity() {
         } else {
             AlertService.start(this)
         }
+
+        // בקש ביטול אופטימיזציית סוללה
+        val pm = getSystemService(PowerManager::class.java)
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            startActivity(Intent(
+            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            android.net.Uri.parse("package:$packageName")
+            ))
+        }
     }
 
     private fun requestGps() {
