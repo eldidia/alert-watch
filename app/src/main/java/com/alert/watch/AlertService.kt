@@ -30,6 +30,65 @@ class AlertService : Service() {
 
         val alertState = MutableStateFlow(AlertState())
 
+        fun syncCities(ctx: Context) {
+    CoroutineScope(Dispatchers.IO).launch {
+        try {
+            val sp = ctx.getSharedPreferences("alert_cities", Context.MODE_PRIVATE)
+            
+            // טען מקומי תמיד
+            if (allCities.isEmpty()) {
+                val stored = sp.getString("cities_list", null)
+                if (stored != null) {
+                    val arr = org.json.JSONArray(stored)
+                    allCities = (0 until arr.length()).map { arr.getString(it) }
+                }
+            }
+
+            // בדוק פעם ביום בלבד
+            val lastSync = sp.getLong("last_sync", 0)
+            if (System.currentTimeMillis() - lastSync < 86_400_000) return@launch
+
+            // משוך מפיקוד העורף ישירות
+            val conn = URL("https://www.oref.org.il/Shared/Ajax/GetCitiesMix.aspx?lang=he")
+                .openConnection() as HttpURLConnection
+            conn.connectTimeout = 5000
+            conn.readTimeout    = 5000
+            conn.setRequestProperty("Referer", "https://www.oref.org.il/")
+            conn.setRequestProperty("X-Requested-With", "XMLHttpRequest")
+
+            val body = conn.inputStream.readBytes().toString(Charsets.UTF_8).trim()
+            conn.disconnect()
+
+            val arr   = org.json.JSONArray(body)
+            val count = arr.length()
+
+            // זהה לכמות המקומית – אין צורך לעדכן
+            if (count == sp.getInt("cities_count", 0)) {
+                sp.edit().putLong("last_sync", System.currentTimeMillis()).apply()
+                Log.d("AlertService", "ישובים עדכניים ($count)")
+                return@launch
+            }
+
+            // שונה – עדכן
+            val cities = (0 until count)
+                .map { arr.getJSONObject(it).optString("label", "") }
+                .filter { it.isNotBlank() }
+
+            allCities = cities
+            sp.edit()
+                .putString("cities_list", org.json.JSONArray(cities).toString())
+                .putInt("cities_count",   cities.size)
+                .putLong("last_sync",     System.currentTimeMillis())
+                .apply()
+
+            Log.d("AlertService", "ישובים עודכנו: ${cities.size}")
+
+        } catch (e: Exception) {
+            Log.w("AlertService", "syncCities: ${e.message}")
+        }
+    }
+        }
+
         fun start(ctx: Context) {
             val i = Intent(ctx, AlertService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
