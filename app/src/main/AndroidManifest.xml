@@ -35,7 +35,7 @@
             android:name=".AlertService"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- מפעיל מחדש אחרי ריסטרט -->
         <receiver android:name=".BootReceiver" android:exported="true">
