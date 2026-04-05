@@ -44,6 +44,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.tasks.await
 
+private var batteryOptAsked = false
+
 // ── Models ────────────────────────────────────────────────────────────────────
 
 enum class Screen { STANDBY, ALERT, SETTINGS }
@@ -146,12 +148,13 @@ class MainActivity : ComponentActivity() {
         }
 
         // בקש ביטול אופטימיזציית סוללה
-        val pm = getSystemService(PowerManager::class.java)!!
-        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+        val pm = getSystemService(PowerManager::class.java)
+        if (!batteryOptAsked && !pm.isIgnoringBatteryOptimizations(packageName)) {
+            batteryOptAsked = true
             startActivity(Intent(
             android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
             android.net.Uri.parse("package:$packageName")
-            ))
+           ))
         }
     }
 
