@@ -136,6 +136,7 @@ class MainActivity : ComponentActivity() {
             AlertService.start(this)
         }
         AlertService.fetchCities(this)
+        AlertService.syncCities(this)
 
         // בקש ביטול אופטימיזציית סוללה
         val pm = getSystemService(PowerManager::class.java)
