@@ -346,11 +346,22 @@ fun SettingsScreen(
 
     // תוצאות חיפוש – מסנן מהמאגר המלא, לא כולל מה שכבר ברשימה
     val searchResults = remember(query) {
-        if (query.trim().length < 2) emptyList()
-        else searchSource
-            .filter { it.contains(query.trim(), ignoreCase = true) }
-            .take(15)
+    val q = query.trim()
+    if (q.length < 2) emptyList()
+    else {
+        // פצל את שאילתת החיפוש למילים
+        val words = q.split(" ", "־", "-").filter { it.length >= 2 }
+        searchSource.filter { city ->
+            // כל מילה בשאילתה חייבת להופיע איפשהו בשם העיר
+            words.all { word ->
+                city.contains(word, ignoreCase = true)
+            }
+            // או: השאילתה המלאה מופיעה כחלק מהשם
+            || city.contains(q, ignoreCase = true)
+        }.take(15)
     }
+    }
+    
 
     // כשיש תוצאות חיפוש – הצג אותן
     LaunchedEffect(searchResults) {
