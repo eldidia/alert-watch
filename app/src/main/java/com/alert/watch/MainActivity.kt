@@ -64,21 +64,10 @@ data class AppPrefs(
     val useGps: Boolean = false
 )
 
-val CITIES = listOf(
-    "תל אביב - מרכז העיר", "תל אביב - דרום העיר", "תל אביב - צפון העיר", "תל אביב - מזרח",
-    "ירושלים", "חיפה - כרמל ועיר תחתית", "חיפה - נווה שאנן ורמות", "חיפה - קריית חיים ושמואל",
-    "באר שבע - מזרח", "באר שבע - מערב", "באר שבע - צפון",
-    "ראשון לציון - מזרח", "ראשון לציון - מערב", "פתח תקווה",
-    "אשדוד - א,ב,ד,ה", "אשדוד - ו,ז", "אשקלון - צפון", "אשקלון - דרום",
-    "נתניה", "רמת גן - גבעתיים", "בני ברק", "חולון", "בת ים",
-    "הרצליה", "כפר סבא", "רעננה", "מודיעין - מכבים רעות", "רחובות", "נס ציונה",
-    "עכו", "נהריה", "טבריה", "צפת", "קריית שמונה", "מטולה",
-    "שדרות", "נתיבות", "אופקים", "דימונה", "אילת",
-    "גבעת שמואל", "קריית אונו", "יבנה", "לוד", "רמלה",
-    "כפר יונה", "חדרה", "זיכרון יעקב", "עפולה", "בית שמש",
-    "קריית ביאליק", "קריית ים", "קריית גת", "קריית מלאכי",
-    "אריאל", "מעלה אדומים", "ביתר עילית"
-)
+val cities = remember { 
+    AlertService.allCities.ifEmpty { CITIES } 
+}
+
 
 // ── MainActivity ──────────────────────────────────────────────────────────────
 
@@ -146,6 +135,7 @@ class MainActivity : ComponentActivity() {
         } else {
             AlertService.start(this)
         }
+        AlertService.fetchCities(this)
 
         // בקש ביטול אופטימיזציית סוללה
         val pm = getSystemService(PowerManager::class.java)
@@ -317,7 +307,11 @@ fun threatToInstruction(threat: String) = when (threat) {
     else         -> "היכנס למרחב מוגן"
 }
 
-// ── Settings Screen ————
+
+// ═══════════════════════════════════════════════════════════════════
+//  Settings Screen 
+// ═══════════════════════════════════════════════════════════════════
+
 @Composable
 fun SettingsScreen(
     prefs: AppPrefs,
@@ -326,42 +320,94 @@ fun SettingsScreen(
     onSave: (AppPrefs) -> Unit,
     onStopService: () -> Unit
 ) {
+    // ── State ─────────────────────────────────────────────────────
+    val MAX_DISPLAY = 30
+
+    // ערים נבחרות
     var selected by remember { mutableStateOf(prefs.watchedCities.toMutableSet()) }
-    var useGps   by remember { mutableStateOf(prefs.useGps) }
-    var query    by remember { mutableStateOf("") }
 
-    // כפתור חזרה – ללא שמירה
-    BackHandler { onBack() }
-
-    // רשימה מסוננת:
-    // 1. תמיד מציג נבחרים ראשונים
-    // 2. אחר כך שאר הרשימה לפי חיפוש
-    // כולל חיפוש חופשי – גם מילים שאינן ברשימה המוכנה
-    val filteredList = remember(query, selected.size) {
-        val q = query.trim()
-        if (q.isBlank()) {
-            // ללא חיפוש: נבחרים ראשונים, אחר כך כל השאר
-            val sel  = CITIES.filter { it in selected }
-            val rest = CITIES.filter { it !in selected }
-            sel + rest
-        } else {
-            // עם חיפוש: מציג הכל שמכיל את הטקסט
-            // נבחרים ראשונים, אחר כך שאר התוצאות
-            val all = CITIES.filter { it.contains(q, ignoreCase = true) }
-            val sel  = all.filter { it in selected }
-            val rest = all.filter { it !in selected }
-            sel + rest
-        }
+    // רשימת תצוגה – תמיד 30 ערים
+    // נבחרות ראשונות, אחר כך ברירת מחדל לפי הרשימה
+    var displayList by remember {
+        val sel  = CITIES.filter { it in prefs.watchedCities }.toMutableList()
+        val rest = CITIES.filter { it !in prefs.watchedCities }
+        val combined = (sel + rest).take(MAX_DISPLAY).toMutableList()
+        mutableStateOf(combined)
     }
 
+    var useGps  by remember { mutableStateOf(prefs.useGps) }
+    var query   by remember { mutableStateOf("") }
+    var showSearchResults by remember { mutableStateOf(false) }
+
+    // מקור נתונים לחיפוש – המאגר המלא (+ ישובים שהורדו מהשרת)
+    val searchSource = remember {
+        (AlertService.allCities.ifEmpty { CITIES }).distinctBy { it }
+    }
+
+    // תוצאות חיפוש – מסנן מהמאגר המלא, לא כולל מה שכבר ברשימה
+    val searchResults = remember(query) {
+        if (query.trim().length < 2) emptyList()
+        else searchSource
+            .filter { it.contains(query.trim(), ignoreCase = true) }
+            .take(15)
+    }
+
+    // כשיש תוצאות חיפוש – הצג אותן
+    LaunchedEffect(searchResults) {
+        showSearchResults = searchResults.isNotEmpty()
+    }
+
+    // ── פונקציה: הוסף עיר לרשימת התצוגה ────────────────────────
+    fun addToDisplayList(city: String) {
+        if (city in displayList) {
+            // כבר ברשימה – פשוט סמן
+            selected = selected.toMutableSet().also { it.add(city) }
+            return
+        }
+
+        val newDisplay = displayList.toMutableList()
+        if (newDisplay.size >= MAX_DISPLAY) {
+            // מצא עיר לא-בחורה מהסוף להסרה
+            val toRemove = newDisplay.lastOrNull { it !in selected }
+            if (toRemove != null) {
+                newDisplay.remove(toRemove)
+            } else {
+                // כל 30 בחורות – לא ניתן להוסיף עוד
+                return
+            }
+        }
+        // הוסף עיר חדשה בהתחלה (אחרי הבחורות)
+        val insertAt = newDisplay.count { it in selected }
+        newDisplay.add(insertAt.coerceAtMost(newDisplay.size), city)
+        displayList = newDisplay
+        selected = selected.toMutableSet().also { it.add(city) }
+        query = ""
+    }
+
+    // ── פונקציה: הסר/הוסף בחירה ─────────────────────────────────
+    fun toggleCity(city: String) {
+        val newSelected = selected.toMutableSet()
+        if (city in selected) {
+            newSelected.remove(city)
+        } else {
+            newSelected.add(city)
+        }
+        selected = newSelected
+    }
+
+    BackHandler { onBack() }
+
+    // ── UI ────────────────────────────────────────────────────────
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A0A)),
         contentPadding = PaddingValues(top = 26.dp, bottom = 24.dp, start = 8.dp, end = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+
         // כותרת
         item {
-            Text("בחר ישובים", color = Color.White, fontSize = 13.sp,
+            Text("ALERT · ישובים",
+                color = Color.White, fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center)
@@ -396,7 +442,7 @@ fun SettingsScreen(
             Row(
                 Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color.White.copy(0.08f))
+                    .background(Color.White.copy(if (query.isNotEmpty()) 0.12f else 0.08f))
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -407,30 +453,85 @@ fun SettingsScreen(
                     textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
                     cursorBrush = SolidColor(Color.White),
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                     decorationBox = { inner ->
                         if (query.isEmpty())
-                            Text("חפש ישוב...", color = Color.White.copy(0.35f), fontSize = 11.sp)
+                            Text("חפש מכל הישובים...",
+                                color = Color.White.copy(0.35f), fontSize = 11.sp)
                         inner()
                     }
                 )
+                if (query.isNotEmpty()) {
+                    Text("✕", color = Color.White.copy(0.5f), fontSize = 12.sp,
+                        modifier = Modifier.clickable { query = "" }.padding(start = 6.dp))
+                }
             }
         }
 
-        // כמה נבחרו
-        if (selected.isNotEmpty()) {
+        // תוצאות חיפוש – מופיעות מעל הרשימה הרגילה
+        if (showSearchResults && query.length >= 2) {
             item {
-                Text("✓ נבחרו: ${selected.size}",
-                    color = Color(0xFF00E676).copy(0.8f),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(start = 4.dp))
+                Text("תוצאות חיפוש:",
+                    color = Color(0xFFFFAB00).copy(0.8f), fontSize = 10.sp,
+                    modifier = Modifier.padding(start = 4.dp, top = 2.dp))
+            }
+            items(searchResults.chunked(2).size) { i ->
+                val row = searchResults.chunked(2)[i]
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    row.forEach { city ->
+                        val inDisplay = city in displayList
+                        val isSelected = city in selected
+                        Box(
+                            Modifier.weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    when {
+                                        isSelected  -> Color(0xFFCC0000).copy(0.85f)
+                                        inDisplay   -> Color.White.copy(0.12f)
+                                        else        -> Color(0xFFFFAB00).copy(0.15f)
+                                    }
+                                )
+                                .clickable { addToDisplayList(city) }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(city,
+                                color = if (isSelected) Color.White else Color.White.copy(0.8f),
+                                fontSize = 10.sp, textAlign = TextAlign.Center,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                lineHeight = 13.sp)
+                        }
+                    }
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+
+            // מפריד
+            item {
+                Box(Modifier.fillMaxWidth().height(1.dp)
+                    .background(Color.White.copy(0.1f)))
             }
         }
 
-        // רשימת ישובים
-        items(filteredList.chunked(2).size) { i ->
-            val row = filteredList.chunked(2)[i]
+        // כותרת רשימה קבועה
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("רשימת ישובים (${displayList.size}/$MAX_DISPLAY)",
+                    color = Color.White.copy(0.4f), fontSize = 9.sp)
+                if (selected.isNotEmpty())
+                    Text("✓ ${selected.size} נבחרו",
+                        color = Color(0xFF00E676).copy(0.8f), fontSize = 9.sp,
+                        fontWeight = FontWeight.Medium)
+            }
+        }
+
+        // רשימת תצוגה קבועה – 30 ערים
+        items(displayList.chunked(2).size) { i ->
+            val row = displayList.chunked(2)[i]
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 row.forEach { city ->
                     val active = city in selected
@@ -441,20 +542,14 @@ fun SettingsScreen(
                                 if (active) Color(0xFFCC0000).copy(0.85f)
                                 else Color.White.copy(0.07f)
                             )
-                            .clickable {
-                                val newSet = selected.toMutableSet()
-                                if (active) newSet.remove(city) else newSet.add(city)
-                                selected = newSet
-                            }
+                            .clickable { toggleCity(city) }
                             .padding(vertical = 6.dp, horizontal = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(city,
                             color = if (active) Color.White else Color.White.copy(0.6f),
-                            fontSize = 10.sp,
-                            textAlign = TextAlign.Center,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
+                            fontSize = 10.sp, textAlign = TextAlign.Center,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis,
                             lineHeight = 13.sp)
                     }
                 }
@@ -469,17 +564,22 @@ fun SettingsScreen(
                 Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFFCC0000))
-                    .clickable { onSave(prefs.copy(watchedCities = selected, useGps = useGps)) }
+                    .clickable {
+                        onSave(prefs.copy(
+                            watchedCities = selected,
+                            useGps = useGps
+                        ))
+                    }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("שמור", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text("שמור", color = Color.White, fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold)
             }
         }
 
-        // כפתור כיבוי שירות
+        // כפתור כיבוי
         item {
-            Spacer(Modifier.height(2.dp))
             Box(
                 Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
@@ -493,4 +593,5 @@ fun SettingsScreen(
         }
     }
 }
+
 
