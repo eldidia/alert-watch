@@ -2,6 +2,8 @@ package com.alert.watch
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.os.PowerManager
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
@@ -144,7 +146,7 @@ class MainActivity : ComponentActivity() {
         }
 
         // בקש ביטול אופטימיזציית סוללה
-        val pm = getSystemService(PowerManager::class.java)
+        val pm = getSystemService(PowerManager::class.java)!!
         if (!pm.isIgnoringBatteryOptimizations(packageName)) {
             startActivity(Intent(
             android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
