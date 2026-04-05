@@ -17,6 +17,7 @@ class AlertService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var lastAlertId = ""
     private var autoDismissJob: Job? = null
+    private lateinit var wakeLock: PowerManager.WakeLock
 
     companion object {
         const val CH_ONGOING = "alert_ongoing"
@@ -44,6 +45,13 @@ class AlertService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannels()
+        // מונע מה-CPU להירדם – מאפשר פולינג גם עם מסך כבוי
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(
+        PowerManager.PARTIAL_WAKE_LOCK,
+        "alert:polling"
+         )
+         wakeLock.acquire()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -56,6 +64,7 @@ class AlertService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (wakeLock.isHeld) wakeLock.release()
         scope.cancel()
     }
 
