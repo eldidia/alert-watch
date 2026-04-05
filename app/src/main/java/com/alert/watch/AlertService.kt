@@ -26,6 +26,7 @@ class AlertService : Service() {
         const val NOTIF_ALERT   = 2
         const val POLL_URL = "https://api.tzevaadom.co.il/notifications"
         const val AUTO_DISMISS_MS = 10 * 60 * 1000L // 10 דקות
+        var allCities: List<String> = emptyList()
 
         val alertState = MutableStateFlow(AlertState())
 
@@ -66,6 +67,60 @@ class AlertService : Service() {
         super.onDestroy()
         if (wakeLock.isHeld) wakeLock.release()
         scope.cancel()
+    }
+
+    fun fetchCities(ctx: Context) {
+    CoroutineScope(Dispatchers.IO).launch {
+        try {
+            val sp = ctx.getSharedPreferences("alert_cities", Context.MODE_PRIVATE)
+            val storedCount = sp.getInt("cities_count", 0)
+            val storedList  = sp.getString("cities_list", null)
+
+            // טען מהזיכרון המקומי
+            if (storedList != null && allCities.isEmpty()) {
+                val arr = org.json.JSONArray(storedList)
+                allCities = (0 until arr.length()).map { arr.getString(it) }
+            }
+
+            // בדוק אם יש שינוי בשרת
+            val versionConn = URL("$SERVER_URL/cities/version")
+                .openConnection() as HttpURLConnection
+            versionConn.connectTimeout = 4000
+            versionConn.readTimeout    = 4000
+            val versionBody = versionConn.inputStream.readBytes().toString(Charsets.UTF_8)
+            versionConn.disconnect()
+
+            val serverCount = org.json.JSONObject(versionBody).optInt("count", 0)
+
+            // אם הכמות זהה – אין צורך להוריד שוב
+            if (serverCount > 0 && serverCount == storedCount) {
+                Log.d("AlertService", "ישובים עדכניים ($serverCount) – אין צורך להוריד")
+                return@launch
+            }
+
+            // יש שינוי – הורד מחדש
+            Log.d("AlertService", "מוריד ישובים: שרת=$serverCount מקומי=$storedCount")
+            val conn = URL("$SERVER_URL/cities")
+                .openConnection() as HttpURLConnection
+            conn.connectTimeout = 6000
+            conn.readTimeout    = 6000
+            val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
+            conn.disconnect()
+
+            val arr = org.json.JSONArray(body)
+            if (arr.length() > 0) {
+                allCities = (0 until arr.length()).map { arr.getString(it) }
+                // שמור מקומית
+                sp.edit()
+                    .putString("cities_list",  body)
+                    .putInt("cities_count",    arr.length())
+                    .apply()
+                Log.d("AlertService", "ישובים עודכנו: ${allCities.size}")
+            }
+        } catch (e: Exception) {
+            Log.w("AlertService", "fetchCities: ${e.message}")
+        }
+    }
     }
 
     // ── Polling ───────────────────────────────────────────────────────────
