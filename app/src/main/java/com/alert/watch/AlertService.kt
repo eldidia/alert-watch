@@ -26,6 +26,9 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 class AlertService : Service() {
 
@@ -60,7 +63,7 @@ class AlertService : Service() {
         val alertState = MutableStateFlow(AlertState())
 
         // Full cities list – loaded from oref or local cache
-        @Volatile var allCities: List<String> = emptyList()
+        var allCities: List<String> by androidx.compose.runtime.mutableStateOf(emptyList())
             private set
 
         // ── Service control ───────────────────────────────────────
