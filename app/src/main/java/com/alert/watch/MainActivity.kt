@@ -122,6 +122,7 @@ class MainActivity : ComponentActivity() {
             val alert    by AlertService.alertState.collectAsState()
             val appPrefs by prefs.state.collectAsState()
             var screen   by remember { mutableStateOf(Screen.STANDBY) }
+            val allCities by AlertService.allCitiesFlow.collectAsState()
 
             // Navigate to alert screen when alert becomes active
             LaunchedEffect(alert.active) {
@@ -143,6 +144,7 @@ class MainActivity : ComponentActivity() {
                     )
                     Screen.SETTINGS -> SettingsScreen(
                         prefs         = appPrefs,
+                        allCities     = allCities,  // ← הוסף פרמטר
                         onRequestGps  = { requestLocationPermission() },
                         onBack        = { screen = Screen.STANDBY },
                         onSave        = { updated ->
@@ -439,6 +441,7 @@ private const val MAX_DISPLAY_CITIES = 30
 @Composable
 fun SettingsScreen(
     prefs: AppPrefs,
+    allCities: List<String>,  // ← מגיע מ-MainActivity
     onRequestGps: () -> Unit,
     onBack: () -> Unit,
     onSave: (AppPrefs) -> Unit,
@@ -449,8 +452,7 @@ fun SettingsScreen(
     var query     by remember { mutableStateOf("") }
 
     // Reactive city source – updates when allCities is populated after sync
-    val searchSource by remember {
-        derivedStateOf { AlertService.allCities.distinctBy { it } }
+    val searchSource = allCities.distinctBy { it }
     }
 
     // Display list: selected first, then fill to MAX_DISPLAY_CITIES from source
