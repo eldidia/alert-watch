@@ -63,8 +63,11 @@ class AlertService : Service() {
         val alertState = MutableStateFlow(AlertState())
 
         // Full cities list – loaded from oref or local cache
-        var allCities: List<String> by androidx.compose.runtime.mutableStateOf(emptyList())
-            private set
+        private val _allCities = MutableStateFlow<List<String>>(emptyList())
+            val allCitiesFlow: StateFlow<List<String>> = _allCities
+            var allCities: List<String>
+            get() = _allCities.value
+            private set(value) { _allCities.value = value }
 
         // ── Service control ───────────────────────────────────────
 
