@@ -3,25 +3,48 @@ package com.alert.watch
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.os.PowerManager
 import android.content.pm.PackageManager
 import android.location.Geocoder
-import android.location.Location
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,61 +59,71 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import androidx.wear.compose.material.*
+import androidx.wear.compose.material.CircularProgressIndicator
+import androidx.wear.compose.material.MaterialTheme
+import androidx.wear.compose.material.ScalingLazyColumn
+import androidx.wear.compose.material.Text
+import androidx.wear.compose.material.items
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
-private var batteryOptAsked = false
-
-// ── Models ────────────────────────────────────────────────────────────────────
+// ── Data models ───────────────────────────────────────────────────
 
 enum class Screen { STANDBY, ALERT, SETTINGS }
 
 data class AlertState(
-    val active: Boolean = false,
-    val cities: List<String> = emptyList(),
-    val threat: String = "1",
-    val countdown: Int = 0,
-    val triggeredAt: Long = 0L
+    val active:      Boolean      = false,
+    val cities:      List<String> = emptyList(),
+    val threat:      String       = "1",
+    val countdown:   Int          = 0,
+    val triggeredAt: Long         = 0L
 )
 
 data class AppPrefs(
     val watchedCities: Set<String> = emptySet(),
-    val gpsCity: String? = null,
-    val useGps: Boolean = false
+    val gpsCity:       String?     = null,
+    val useGps:        Boolean     = false
 )
 
-val cities = remember { 
-    AlertService.allCities.ifEmpty { CITIES } 
-}
-
-
-// ── MainActivity ──────────────────────────────────────────────────────────────
+// ── MainActivity ──────────────────────────────────────────────────
 
 class MainActivity : ComponentActivity() {
 
-    private val prefs by lazy { AppPreferences(this) }
+    private val TAG = "MainActivity"
 
-    private val notifPermission = registerForActivityResult(
+    private val prefs           by lazy { AppPreferences(this) }
+    private var batteryOptAsked = false
+
+    // Permission launchers
+    private val notifPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { AlertService.start(this) }
+    ) { granted ->
+        if (granted) AlertService.start(this)
+    }
 
-    private val locationPermission = registerForActivityResult(
+    private val locationPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { granted -> if (granted.values.any { it }) detectGpsCity() }
+    ) { permissions ->
+        if (permissions.values.any { it }) detectAndSaveGpsCity()
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
             val alert    by AlertService.alertState.collectAsState()
             val appPrefs by prefs.state.collectAsState()
             var screen   by remember { mutableStateOf(Screen.STANDBY) }
 
+            // Navigate to alert screen when alert becomes active
             LaunchedEffect(alert.active) {
                 if (alert.active) screen = Screen.ALERT
             }
@@ -98,27 +131,27 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 when (screen) {
                     Screen.STANDBY  -> StandbyScreen(
-                        prefs = appPrefs,
+                        prefs      = appPrefs,
                         onSettings = { screen = Screen.SETTINGS }
                     )
                     Screen.ALERT    -> AlertScreen(
-                        alert = alert,
+                        alert     = alert,
                         onDismiss = {
                             AlertService.alertState.value = AlertState()
                             screen = Screen.STANDBY
                         }
                     )
                     Screen.SETTINGS -> SettingsScreen(
-                        prefs        = appPrefs,
-                        onRequestGps = { requestGps() },
-                        onBack       = { screen = Screen.STANDBY }, // חזרה ללא שמירה
-                        onSave       = { updated ->
+                        prefs         = appPrefs,
+                        onRequestGps  = { requestLocationPermission() },
+                        onBack        = { screen = Screen.STANDBY },
+                        onSave        = { updated ->
                             prefs.save(updated)
                             screen = Screen.STANDBY
                         },
                         onStopService = {
                             AlertService.stop(this)
-                            finishAffinity() // סגור אפליקציה לחלוטין
+                            finishAffinity()
                         }
                     )
                 }
@@ -128,68 +161,91 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+        startServiceWithPermission()
+        AlertService.syncCities(this)
+        requestIgnoreBatteryOptimizations()
+    }
+
+    // ── Service startup ───────────────────────────────────────────
+
+    private fun startServiceWithPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) {
-            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
             AlertService.start(this)
         }
-        AlertService.fetchCities(this)
-        AlertService.syncCities(this)
+    }
 
-        // בקש ביטול אופטימיזציית סוללה
+    // ── Battery optimization ──────────────────────────────────────
+
+    private fun requestIgnoreBatteryOptimizations() {
+        if (batteryOptAsked) return
         val pm = getSystemService(PowerManager::class.java)
-        if (!batteryOptAsked && !pm.isIgnoringBatteryOptimizations(packageName)) {
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
             batteryOptAsked = true
-            startActivity(Intent(
-            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-            android.net.Uri.parse("package:$packageName")
-           ))
+            runCatching {
+                startActivity(Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                ))
+            }
         }
     }
 
-    private fun requestGps() {
+    // ── GPS ───────────────────────────────────────────────────────
+
+    private fun requestLocationPermission() {
         val fine = Manifest.permission.ACCESS_FINE_LOCATION
-        if (ContextCompat.checkSelfPermission(this, fine) == PackageManager.PERMISSION_GRANTED)
-            detectGpsCity()
-        else
-            locationPermission.launch(arrayOf(fine, Manifest.permission.ACCESS_COARSE_LOCATION))
+        if (ContextCompat.checkSelfPermission(this, fine) == PackageManager.PERMISSION_GRANTED) {
+            detectAndSaveGpsCity()
+        } else {
+            locationPermLauncher.launch(arrayOf(
+                fine,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ))
+        }
     }
 
-    private fun detectGpsCity() {
+    private fun detectAndSaveGpsCity() {
         lifecycleScope.launch(Dispatchers.IO) {
-            try {
+            runCatching {
                 val client = LocationServices.getFusedLocationProviderClient(this@MainActivity)
-                val loc: Location = client
-                    .getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                        CancellationTokenSource().token).await() ?: return@launch
+                val location = client.getCurrentLocation(
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    CancellationTokenSource().token
+                ).await() ?: return@launch
 
                 @Suppress("DEPRECATION")
                 val addresses = Geocoder(this@MainActivity)
-                    .getFromLocation(loc.latitude, loc.longitude, 1)
-                val locality  = addresses?.firstOrNull()?.locality
+                    .getFromLocation(location.latitude, location.longitude, 1)
+
+                val locality = addresses?.firstOrNull()?.locality
                     ?: addresses?.firstOrNull()?.subAdminArea
                     ?: return@launch
 
-                val matched = CITIES.firstOrNull {
+                // Match against the official Pikud HaOref city list
+                val source  = AlertService.allCities
+                val matched = source.firstOrNull {
                     it.contains(locality, ignoreCase = true) ||
                     locality.contains(it.take(4), ignoreCase = true)
                 } ?: locality
 
-                prefs.save(prefs.state.value.copy(gpsCity = matched, useGps = true))
-                Log.d("ALERT", "GPS: $matched")
-            } catch (e: Exception) {
-                Log.w("ALERT", "GPS failed: ${e.message}")
-            }
+                val current = prefs.state.value
+                prefs.save(current.copy(gpsCity = matched, useGps = true))
+                Log.d(TAG, "GPS city detected: $matched")
+
+            }.onFailure { Log.w(TAG, "GPS detection failed: ${it.message}") }
         }
     }
 }
 
-// ── Preferences ───────────────────────────────────────────────────────────────
+// ── Preferences ───────────────────────────────────────────────────
 
 class AppPreferences(ctx: Context) {
-    private val sp = ctx.getSharedPreferences("alert_prefs", Context.MODE_PRIVATE)
+
+    private val sp     = ctx.getSharedPreferences("alert_prefs", Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(load())
     val state: StateFlow<AppPrefs> = _state
 
@@ -203,115 +259,182 @@ class AppPreferences(ctx: Context) {
     }
 
     private fun load() = AppPrefs(
-        watchedCities = sp.getStringSet("cities", emptySet()) ?: emptySet(),
-        gpsCity       = sp.getString("gps_city",  null),
-        useGps        = sp.getBoolean("use_gps",   false)
+        watchedCities = sp.getStringSet("cities",   emptySet()) ?: emptySet(),
+        gpsCity       = sp.getString("gps_city",    null),
+        useGps        = sp.getBoolean("use_gps",    false)
     )
 }
 
-// ── Screens ───────────────────────────────────────────────────────────────────
+// ── Threat instruction mapping ────────────────────────────────────
+
+fun threatToInstruction(threat: String): String = when (threat) {
+    "1", "2", "13" -> "היכנס למרחב מוגן"
+    "3"             -> "נעל דלתות · שכב על הרצפה"
+    "4"             -> "עמוד בפתח דלת"
+    "6"             -> "התרחק מהחוף"
+    else            -> "היכנס למרחב מוגן"
+}
+
+// ── Standby Screen ────────────────────────────────────────────────
 
 @Composable
 fun StandbyScreen(prefs: AppPrefs, onSettings: () -> Unit) {
-    val cityCount = prefs.watchedCities.size + if (prefs.useGps && prefs.gpsCity != null) 1 else 0
-    val inf = rememberInfiniteTransition(label = "p")
+    val cityCount = prefs.watchedCities.size +
+        if (prefs.useGps && prefs.gpsCity != null) 1 else 0
+
+    val inf   = rememberInfiniteTransition(label = "standby_pulse")
     val scale by inf.animateFloat(
-        1f, 1.5f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "s"
+        initialValue   = 1f,
+        targetValue    = 1.5f,
+        animationSpec  = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label          = "dot_scale"
     )
+
     Box(
-        Modifier.fillMaxSize().background(Color(0xFF0A0A0A)).clickable { onSettings() },
-        contentAlignment = Alignment.Center
+        modifier            = Modifier.fillMaxSize().background(Color(0xFF0A0A0A))
+                                      .clickable { onSettings() },
+        contentAlignment    = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // Status dot
             Box(
-                Modifier.size(10.dp).scale(scale).clip(CircleShape)
-                    .background(if (cityCount > 0) Color(0xFF00E676) else Color(0xFFFFAB00))
+                modifier = Modifier
+                    .size(10.dp)
+                    .scale(scale)
+                    .clip(CircleShape)
+                    .background(
+                        if (cityCount > 0) Color(0xFF00E676) else Color(0xFFFFAB00)
+                    )
             )
             Spacer(Modifier.height(10.dp))
-            Text("ALERT", color = Color.White, fontSize = 16.sp,
-                fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+            Text(
+                text       = "ALERT",
+                color      = Color.White,
+                fontSize   = 16.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 2.sp
+            )
             Spacer(Modifier.height(4.dp))
             Text(
-                if (cityCount == 0) "לחץ לבחירת ישוב" else "$cityCount ישובים · פעיל",
-                color = Color.White.copy(0.45f), fontSize = 11.sp, textAlign = TextAlign.Center
+                text      = if (cityCount == 0) "לחץ לבחירת ישוב"
+                            else "$cityCount ישובים · פעיל",
+                color     = Color.White.copy(alpha = 0.45f),
+                fontSize  = 11.sp,
+                textAlign = TextAlign.Center
             )
             if (prefs.useGps && prefs.gpsCity != null) {
                 Spacer(Modifier.height(3.dp))
-                Text("📍 ${prefs.gpsCity}", color = Color(0xFF00E676).copy(0.7f), fontSize = 10.sp)
+                Text(
+                    text     = "📍 ${prefs.gpsCity}",
+                    color    = Color(0xFF00E676).copy(alpha = 0.7f),
+                    fontSize = 10.sp
+                )
             }
         }
     }
 }
 
+// ── Alert Screen ──────────────────────────────────────────────────
+
 @Composable
 fun AlertScreen(alert: AlertState, onDismiss: () -> Unit) {
     var secsLeft by remember { mutableIntStateOf(alert.countdown) }
+
     LaunchedEffect(alert.triggeredAt) {
         secsLeft = alert.countdown
-        while (secsLeft > 0) { delay(1_000); secsLeft-- }
+        while (secsLeft > 0) {
+            delay(1_000L)
+            secsLeft--
+        }
     }
-    val inf = rememberInfiniteTransition(label = "bg")
+
+    val inf     = rememberInfiniteTransition(label = "alert_bg")
     val bgAlpha by inf.animateFloat(
-        0.82f, 1f, infiniteRepeatable(tween(450), RepeatMode.Reverse), label = "a"
+        initialValue  = 0.82f,
+        targetValue   = 1f,
+        animationSpec = infiniteRepeatable(tween(450), RepeatMode.Reverse),
+        label         = "bg_alpha"
     )
 
-    // כפתור חזרה סוגר את ההתראה
+    // Allow hardware back button to dismiss
     BackHandler { onDismiss() }
 
     Box(
-        Modifier.fillMaxSize().background(Color(0xFFBB0000).copy(bgAlpha))
+        modifier         = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFBB0000).copy(alpha = bgAlpha))
             .clickable { onDismiss() },
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(10.dp)) {
-            Text("🚨", fontSize = 26.sp)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier            = Modifier.padding(10.dp)
+        ) {
+            Text(text = "🚨", fontSize = 26.sp)
             Spacer(Modifier.height(2.dp))
-            Text("ALERT", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black,
-                letterSpacing = 2.sp)
+            Text(
+                text          = "ALERT",
+                color         = Color.White,
+                fontSize      = 15.sp,
+                fontWeight    = FontWeight.Black,
+                letterSpacing = 2.sp
+            )
             Spacer(Modifier.height(2.dp))
-            Text(alert.cities.take(3).joinToString(" · "),
-                color = Color.White.copy(0.9f), fontSize = 11.sp,
-                textAlign = TextAlign.Center, maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 6.dp))
-            Spacer(Modifier.height(6.dp))
+            Text(
+                text      = alert.cities.take(3).joinToString(" · "),
+                color     = Color.White.copy(alpha = 0.9f),
+                fontSize  = 11.sp,
+                textAlign = TextAlign.Center,
+                maxLines  = 2,
+                overflow  = TextOverflow.Ellipsis,
+                modifier  = Modifier.padding(horizontal = 6.dp)
+            )
             if (alert.countdown > 0) {
-                CountdownRing(secsLeft, alert.countdown)
                 Spacer(Modifier.height(6.dp))
+                CountdownRing(secsLeft = secsLeft, total = alert.countdown)
             }
-            Text(threatToInstruction(alert.threat),
-                color = Color.White, fontSize = 10.sp,
-                textAlign = TextAlign.Center, maxLines = 2, lineHeight = 14.sp)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text      = threatToInstruction(alert.threat),
+                color     = Color.White,
+                fontSize  = 10.sp,
+                textAlign = TextAlign.Center,
+                maxLines  = 2,
+                lineHeight = 14.sp
+            )
             Spacer(Modifier.height(5.dp))
-            Text("לחץ לסגור", color = Color.White.copy(0.3f), fontSize = 9.sp)
+            Text(
+                text    = "לחץ לסגור",
+                color   = Color.White.copy(alpha = 0.3f),
+                fontSize = 9.sp
+            )
         }
     }
 }
 
 @Composable
 fun CountdownRing(secsLeft: Int, total: Int) {
-    val progress = if (total > 0) secsLeft.toFloat() / total else 0f
+    val progress = if (total > 0) secsLeft.toFloat() / total.toFloat() else 0f
     Box(contentAlignment = Alignment.Center) {
         CircularProgressIndicator(
-            progress = progress, modifier = Modifier.size(52.dp), strokeWidth = 3.dp,
-            indicatorColor = Color.White, trackColor = Color.White.copy(0.15f)
+            progress       = progress,
+            modifier       = Modifier.size(52.dp),
+            strokeWidth    = 3.dp,
+            indicatorColor = Color.White,
+            trackColor     = Color.White.copy(alpha = 0.15f)
         )
-        Text(secsLeft.toString(), color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+        Text(
+            text       = secsLeft.toString(),
+            color      = Color.White,
+            fontSize   = 19.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
-fun threatToInstruction(threat: String) = when (threat) {
-    "1","2","13" -> "היכנס למרחב מוגן"
-    "3"          -> "נעל דלתות · שכב על הרצפה"
-    "4"          -> "עמוד בפתח דלת"
-    "6"          -> "התרחק מהחוף"
-    else         -> "היכנס למרחב מוגן"
-}
+// ── Settings Screen ───────────────────────────────────────────────
 
-
-// ═══════════════════════════════════════════════════════════════════
-//  Settings Screen 
-// ═══════════════════════════════════════════════════════════════════
+private const val MAX_DISPLAY_CITIES = 30
 
 @Composable
 fun SettingsScreen(
@@ -321,234 +444,258 @@ fun SettingsScreen(
     onSave: (AppPrefs) -> Unit,
     onStopService: () -> Unit
 ) {
-    // ── State ─────────────────────────────────────────────────────
-    val MAX_DISPLAY = 30
+    var selected  by remember { mutableStateOf(prefs.watchedCities.toMutableSet()) }
+    var useGps    by remember { mutableStateOf(prefs.useGps) }
+    var query     by remember { mutableStateOf("") }
 
-    // ערים נבחרות
-    var selected by remember { mutableStateOf(prefs.watchedCities.toMutableSet()) }
+    // Reactive city source – updates when allCities is populated after sync
+    val searchSource by remember {
+        derivedStateOf { AlertService.allCities.distinctBy { it } }
+    }
 
-    // רשימת תצוגה – תמיד 30 ערים
-    // נבחרות ראשונות, אחר כך ברירת מחדל לפי הרשימה
+    // Display list: selected first, then fill to MAX_DISPLAY_CITIES from source
     var displayList by remember {
-        val sel  = CITIES.filter { it in prefs.watchedCities }.toMutableList()
-        val rest = CITIES.filter { it !in prefs.watchedCities }
-        val combined = (sel + rest).take(MAX_DISPLAY).toMutableList()
-        mutableStateOf(combined)
+        val sel  = searchSource.filter { it in prefs.watchedCities }
+        val rest = searchSource.filter { it !in prefs.watchedCities }
+            .take(MAX_DISPLAY_CITIES - sel.size)
+        mutableStateOf((sel + rest).toMutableList())
     }
 
-    var useGps  by remember { mutableStateOf(prefs.useGps) }
-    var query   by remember { mutableStateOf("") }
-    var showSearchResults by remember { mutableStateOf(false) }
-
-    // מקור נתונים לחיפוש – המאגר המלא (+ ישובים שהורדו מהשרת)
-    val searchSource = remember {
-        (AlertService.allCities.ifEmpty { CITIES }).distinctBy { it }
+    // Smart search: matches any word fragment across multiple words
+    val searchResults by remember(query) {
+        derivedStateOf {
+            val q = query.trim()
+            if (q.length < 2) return@derivedStateOf emptyList()
+            val words = q.split(" ", "־", "-").filter { it.length >= 2 }
+            searchSource.filter { city ->
+                words.all { word -> city.contains(word, ignoreCase = true) } ||
+                city.contains(q, ignoreCase = true)
+            }.take(15)
+        }
     }
 
-    // תוצאות חיפוש – מסנן מהמאגר המלא, לא כולל מה שכבר ברשימה
-    val searchResults = remember(query) {
-    val q = query.trim()
-    if (q.length < 2) emptyList()
-    else {
-        // פצל את שאילתת החיפוש למילים
-        val words = q.split(" ", "־", "-").filter { it.length >= 2 }
-        searchSource.filter { city ->
-            // כל מילה בשאילתה חייבת להופיע איפשהו בשם העיר
-            words.all { word ->
-                city.contains(word, ignoreCase = true)
-            }
-            // או: השאילתה המלאה מופיעה כחלק מהשם
-            || city.contains(q, ignoreCase = true)
-        }.take(15)
-    }
-    }
-    
+    val showSearch = searchResults.isNotEmpty() && query.length >= 2
 
-    // כשיש תוצאות חיפוש – הצג אותן
-    LaunchedEffect(searchResults) {
-        showSearchResults = searchResults.isNotEmpty()
-    }
-
-    // ── פונקציה: הוסף עיר לרשימת התצוגה ────────────────────────
-    fun addToDisplayList(city: String) {
+    // Add a city from search results into the display list
+    fun addCityFromSearch(city: String) {
         if (city in displayList) {
-            // כבר ברשימה – פשוט סמן
             selected = selected.toMutableSet().also { it.add(city) }
+            query    = ""
             return
         }
-
-        val newDisplay = displayList.toMutableList()
-        if (newDisplay.size >= MAX_DISPLAY) {
-            // מצא עיר לא-בחורה מהסוף להסרה
-            val toRemove = newDisplay.lastOrNull { it !in selected }
-            if (toRemove != null) {
-                newDisplay.remove(toRemove)
-            } else {
-                // כל 30 בחורות – לא ניתן להוסיף עוד
-                return
-            }
+        val updated = displayList.toMutableList()
+        if (updated.size >= MAX_DISPLAY_CITIES) {
+            // Remove the last unselected city to make room
+            val evict = updated.lastOrNull { it !in selected } ?: return
+            updated.remove(evict)
         }
-        // הוסף עיר חדשה בהתחלה (אחרי הבחורות)
-        val insertAt = newDisplay.count { it in selected }
-        newDisplay.add(insertAt.coerceAtMost(newDisplay.size), city)
-        displayList = newDisplay
-        selected = selected.toMutableSet().also { it.add(city) }
-        query = ""
+        // Insert after currently selected items
+        val insertAt = updated.count { it in selected }.coerceAtMost(updated.size)
+        updated.add(insertAt, city)
+        displayList = updated
+        selected    = selected.toMutableSet().also { it.add(city) }
+        query       = ""
     }
 
-    // ── פונקציה: הסר/הוסף בחירה ─────────────────────────────────
     fun toggleCity(city: String) {
-        val newSelected = selected.toMutableSet()
-        if (city in selected) {
-            newSelected.remove(city)
-        } else {
-            newSelected.add(city)
+        selected = selected.toMutableSet().also {
+            if (city in it) it.remove(city) else it.add(city)
         }
-        selected = newSelected
     }
 
     BackHandler { onBack() }
 
-    // ── UI ────────────────────────────────────────────────────────
     ScalingLazyColumn(
-        modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A0A)),
-        contentPadding = PaddingValues(top = 26.dp, bottom = 24.dp, start = 8.dp, end = 8.dp),
+        modifier        = Modifier.fillMaxSize().background(Color(0xFF0A0A0A)),
+        contentPadding  = PaddingValues(top = 26.dp, bottom = 24.dp, start = 8.dp, end = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
 
-        // כותרת
+        // ── Title ─────────────────────────────────────────────────
         item {
-            Text("ALERT · ישובים",
-                color = Color.White, fontSize = 13.sp,
+            Text(
+                text       = "ALERT · ישובים",
+                color      = Color.White,
+                fontSize   = 13.sp,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center)
+                modifier   = Modifier.fillMaxWidth(),
+                textAlign  = TextAlign.Center
+            )
         }
 
-        // GPS
+        // ── GPS toggle ────────────────────────────────────────────
         item {
             Row(
-                Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (useGps) Color(0xFF00E676).copy(0.12f) else Color.White.copy(0.06f))
+                    .background(
+                        if (useGps) Color(0xFF00E676).copy(0.12f)
+                        else Color.White.copy(0.06f)
+                    )
                     .clickable { useGps = !useGps; if (useGps) onRequestGps() }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment    = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
-                    Text("📍 GPS אוטומטי", color = Color.White,
-                        fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                    Text(prefs.gpsCity ?: "מזהה ישוב קרוב",
-                        color = if (prefs.gpsCity != null) Color(0xFF00E676).copy(0.8f)
-                                else Color.White.copy(0.4f),
-                        fontSize = 10.sp)
+                    Text(
+                        text       = "📍 GPS אוטומטי",
+                        color      = Color.White,
+                        fontSize   = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text     = prefs.gpsCity ?: "מזהה ישוב קרוב",
+                        color    = if (prefs.gpsCity != null) Color(0xFF00E676).copy(0.8f)
+                                   else Color.White.copy(0.4f),
+                        fontSize = 10.sp
+                    )
                 }
-                Box(Modifier.size(14.dp).clip(CircleShape)
-                    .background(if (useGps) Color(0xFF00E676) else Color.White.copy(0.2f)))
+                Box(
+                    modifier = Modifier
+                        .size(14.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (useGps) Color(0xFF00E676)
+                            else Color.White.copy(0.2f)
+                        )
+                )
             }
         }
 
-        // שדה חיפוש
+        // ── Search field ──────────────────────────────────────────
         item {
             Row(
-                Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color.White.copy(if (query.isNotEmpty()) 0.12f else 0.08f))
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("🔍 ", fontSize = 12.sp)
+                Text(text = "🔍 ", fontSize = 12.sp)
                 BasicTextField(
-                    value = query,
+                    value         = query,
                     onValueChange = { query = it },
-                    textStyle = TextStyle(color = Color.White, fontSize = 11.sp),
-                    cursorBrush = SolidColor(Color.White),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
+                    textStyle     = TextStyle(color = Color.White, fontSize = 11.sp),
+                    cursorBrush   = SolidColor(Color.White),
+                    singleLine    = true,
+                    modifier      = Modifier.weight(1f),
                     decorationBox = { inner ->
-                        if (query.isEmpty())
-                            Text("חפש מכל הישובים...",
-                                color = Color.White.copy(0.35f), fontSize = 11.sp)
+                        if (query.isEmpty()) {
+                            Text(
+                                text     = "חפש ישוב...",
+                                color    = Color.White.copy(0.35f),
+                                fontSize = 11.sp
+                            )
+                        }
                         inner()
                     }
                 )
                 if (query.isNotEmpty()) {
-                    Text("✕", color = Color.White.copy(0.5f), fontSize = 12.sp,
-                        modifier = Modifier.clickable { query = "" }.padding(start = 6.dp))
+                    Text(
+                        text     = "✕",
+                        color    = Color.White.copy(0.5f),
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .clickable { query = "" }
+                            .padding(start = 6.dp)
+                    )
                 }
             }
         }
 
-        // תוצאות חיפוש – מופיעות מעל הרשימה הרגילה
-        if (showSearchResults && query.length >= 2) {
+        // ── Search results ────────────────────────────────────────
+        if (showSearch) {
             item {
-                Text("תוצאות חיפוש:",
-                    color = Color(0xFFFFAB00).copy(0.8f), fontSize = 10.sp,
-                    modifier = Modifier.padding(start = 4.dp, top = 2.dp))
+                Text(
+                    text     = "תוצאות:",
+                    color    = Color(0xFFFFAB00).copy(0.8f),
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
             }
-            items(searchResults.chunked(2).size) { i ->
-                val row = searchResults.chunked(2)[i]
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            items(searchResults.chunked(2)) { row ->
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     row.forEach { city ->
-                        val inDisplay = city in displayList
-                        val isSelected = city in selected
                         Box(
-                            Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
                                     when {
-                                        isSelected  -> Color(0xFFCC0000).copy(0.85f)
-                                        inDisplay   -> Color.White.copy(0.12f)
-                                        else        -> Color(0xFFFFAB00).copy(0.15f)
+                                        city in selected    -> Color(0xFFCC0000).copy(0.85f)
+                                        city in displayList -> Color.White.copy(0.12f)
+                                        else                -> Color(0xFFFFAB00).copy(0.15f)
                                     }
                                 )
-                                .clickable { addToDisplayList(city) }
+                                .clickable { addCityFromSearch(city) }
                                 .padding(vertical = 6.dp, horizontal = 4.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(city,
-                                color = if (isSelected) Color.White else Color.White.copy(0.8f),
-                                fontSize = 10.sp, textAlign = TextAlign.Center,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis,
-                                lineHeight = 13.sp)
+                            Text(
+                                text       = city,
+                                color      = if (city in selected) Color.White
+                                             else Color.White.copy(0.8f),
+                                fontSize   = 10.sp,
+                                textAlign  = TextAlign.Center,
+                                maxLines   = 2,
+                                overflow   = TextOverflow.Ellipsis,
+                                lineHeight = 13.sp
+                            )
                         }
                     }
                     if (row.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
-
-            // מפריד
             item {
-                Box(Modifier.fillMaxWidth().height(1.dp)
-                    .background(Color.White.copy(0.1f)))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(Color.White.copy(0.1f))
+                )
             }
         }
 
-        // כותרת רשימה קבועה
+        // ── Display list header ───────────────────────────────────
         item {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                modifier              = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment     = Alignment.CenterVertically
             ) {
-                Text("רשימת ישובים (${displayList.size}/$MAX_DISPLAY)",
-                    color = Color.White.copy(0.4f), fontSize = 9.sp)
-                if (selected.isNotEmpty())
-                    Text("✓ ${selected.size} נבחרו",
-                        color = Color(0xFF00E676).copy(0.8f), fontSize = 9.sp,
-                        fontWeight = FontWeight.Medium)
+                Text(
+                    text     = "ישובים (${displayList.size}/$MAX_DISPLAY_CITIES)",
+                    color    = Color.White.copy(0.4f),
+                    fontSize = 9.sp
+                )
+                if (selected.isNotEmpty()) {
+                    Text(
+                        text       = "✓ ${selected.size} נבחרו",
+                        color      = Color(0xFF00E676).copy(0.8f),
+                        fontSize   = 9.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
         }
 
-        // רשימת תצוגה קבועה – 30 ערים
-        items(displayList.chunked(2).size) { i ->
-            val row = displayList.chunked(2)[i]
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        // ── Display list ──────────────────────────────────────────
+        items(displayList.chunked(2)) { row ->
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 row.forEach { city ->
                     val active = city in selected
                     Box(
-                        Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
                             .clip(RoundedCornerShape(8.dp))
                             .background(
                                 if (active) Color(0xFFCC0000).copy(0.85f)
@@ -558,52 +705,61 @@ fun SettingsScreen(
                             .padding(vertical = 6.dp, horizontal = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(city,
-                            color = if (active) Color.White else Color.White.copy(0.6f),
-                            fontSize = 10.sp, textAlign = TextAlign.Center,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis,
-                            lineHeight = 13.sp)
+                        Text(
+                            text       = city,
+                            color      = if (active) Color.White else Color.White.copy(0.6f),
+                            fontSize   = 10.sp,
+                            textAlign  = TextAlign.Center,
+                            maxLines   = 2,
+                            overflow   = TextOverflow.Ellipsis,
+                            lineHeight = 13.sp
+                        )
                     }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
 
-        // כפתור שמור
+        // ── Save button ───────────────────────────────────────────
         item {
             Spacer(Modifier.height(4.dp))
             Box(
-                Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFFCC0000))
                     .clickable {
-                        onSave(prefs.copy(
-                            watchedCities = selected,
-                            useGps = useGps
-                        ))
+                        onSave(prefs.copy(watchedCities = selected, useGps = useGps))
                     }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("שמור", color = Color.White, fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold)
+                Text(
+                    text       = "שמור",
+                    color      = Color.White,
+                    fontSize   = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
-        // כפתור כיבוי
+        // ── Stop service button ───────────────────────────────────
         item {
             Box(
-                Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color.White.copy(0.08f))
                     .clickable { onStopService() }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("כבה שירות", color = Color.White.copy(0.5f), fontSize = 12.sp)
+                Text(
+                    text     = "כבה שירות",
+                    color    = Color.White.copy(0.5f),
+                    fontSize = 12.sp
+                )
             }
         }
     }
 }
-
-
