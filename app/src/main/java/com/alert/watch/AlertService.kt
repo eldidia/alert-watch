@@ -64,8 +64,8 @@ class AlertService : Service() {
 
         // Full cities list – loaded from oref or local cache
         private val _allCities = MutableStateFlow<List<String>>(emptyList())
-            val allCitiesFlow: StateFlow<List<String>> = _allCities
-            var allCities: List<String>
+        val allCitiesFlow: StateFlow<List<String>> = _allCities
+        var allCities: List<String>
             get() = _allCities.value
             private set(value) { _allCities.value = value }
 
