@@ -446,7 +446,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onSave: (AppPrefs) -> Unit,
     onStopService: () -> Unit
-) {
+    ) {
     var selected  by remember { mutableStateOf(prefs.watchedCities.toMutableSet()) }
     var useGps    by remember { mutableStateOf(prefs.useGps) }
     var query     by remember { mutableStateOf("") }
